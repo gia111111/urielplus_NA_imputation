@@ -1,0 +1,29 @@
+{
+  "typological": "urielplus_analysis/typological_data.csv",
+  "languages": "urielplus_analysis/languages.csv",
+  "split_manifest": "imputation_exp/runs/splits/manifests/split_manifest.csv",
+  "regimes": [
+    "mcar",
+    "empirical_copy",
+    "Local_block_S",
+    "Local_block_P",
+    "Local_block_M",
+    "Local_block_INV",
+    "Global_block_S",
+    "Global_block_P",
+    "Global_block_M",
+    "Global_block_INV"
+  ],
+  "seeds": [0, 1, 2],
+  "filter_special_families": true,
+  "variant": "full",
+  "models": ["logistic_regression", "decision_tree"],
+  "logit_diagnostics": true,
+  "predictors": {
+    "k_geo": 50,
+    "geo_backend": "knn",
+    "top_corr_features": 32,
+    "corr_shrinkage": 20.0,
+    "min_corr_overlap": 20
+  }
+}

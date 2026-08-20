@@ -304,8 +304,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--regimes', nargs='+', default=None)
     parser.add_argument('--seeds', nargs='+', type=int, default=None)
     parser.add_argument('--index-col', default=None)
-    parser.add_argument('--drop-empty-languages', action='store_true')
-    parser.add_argument('--keep-special-languages', action='store_true')
+    parser.add_argument('--language-min-coverage', type=float, default=0.05)
+    parser.add_argument('--feature-min-coverage', type=float, default=0.05)
     parser.add_argument('--epochs', type=int, default=DEFAULT_EPOCHS)
     parser.add_argument('--batch', type=int, default=DEFAULT_BATCH)
     parser.add_argument('--lr', type=float, default=DEFAULT_LR)
@@ -331,7 +331,13 @@ def main() -> None:
     print(f'[info] outdir        : {outdir}')
     print(f'[info] epochs={args.epochs}  batch={args.batch}  lr={args.lr}')
     t0 = time.time()
-    dataset = load_dataset(args.typological, args.languages, index_col=args.index_col, drop_empty_languages=args.drop_empty_languages, filter_special_families=not args.keep_special_languages)
+    dataset = load_dataset(
+        args.typological,
+        args.languages,
+        index_col=args.index_col,
+        language_min_coverage=args.language_min_coverage,
+        feature_min_coverage=args.feature_min_coverage,
+    )
     print(f'[load] dataset loaded in {time.time() - t0:.1f}s · X={dataset.X.shape}')
     shared_ctx = build_context(dataset, regime_name='')
     print(f'[ctx ] side_features dim = {shared_ctx.side_features.shape[1]}')

@@ -9,16 +9,6 @@ import pandas as pd
 FEATURE_TYPES = ("S", "P", "M", "INV")
 TYPE_ORDER = list(FEATURE_TYPES)
 
-SPECIAL_FAMILY_IDS = {
-    "unat1236",  # Unattested
-    "sign1238",  # Sign
-    "arti1236",  # Artificial
-    "uncl1493",  # Unclassifiable
-    "spee1234",  # Speech Register
-    "book1242",  # Bookkeeping
-}
-
-
 def feature_type_series(columns: Iterable[str]) -> pd.Series:
     """Derive the four URIEL+ feature-type codes once from column prefixes."""
     feature_types: dict[str, str] = {}
@@ -85,15 +75,3 @@ def feature_types_for_column_indices(
     if np.any(indices < 0) or np.any(indices >= n_features):
         raise ValueError("column_indices contains an index outside the feature matrix.")
     return types[indices]
-
-
-def feature_type_from_regime(regime: str) -> str:
-    for prefix in ("Local_block_", "Global_block_"):
-        if regime.startswith(prefix):
-            target_type = regime[len(prefix) :]
-            if target_type in FEATURE_TYPES:
-                return target_type
-    raise ValueError(
-        f"Unknown block regime {regime!r}. Expected Local_block_<type> or "
-        f"Global_block_<type>, where type is one of {FEATURE_TYPES}."
-    )

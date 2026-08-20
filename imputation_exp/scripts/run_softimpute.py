@@ -37,8 +37,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--regimes", nargs="+", default=None)
     parser.add_argument("--seeds", nargs="+", type=int, default=None)
     parser.add_argument("--index-col", default=None)
-    parser.add_argument("--drop-empty-languages", action="store_true")
-    parser.add_argument("--keep-special-languages", action="store_true")
+    parser.add_argument("--language-min-coverage", type=float, default=0.05)
+    parser.add_argument("--feature-min-coverage", type=float, default=0.05)
     parser.add_argument(
         "--selection-metric",
         choices=["rmse", "macro_f1"],
@@ -90,8 +90,8 @@ def main() -> None:
         args.typological,
         args.languages,
         index_col=args.index_col,
-        drop_empty_languages=args.drop_empty_languages,
-        filter_special_families=not args.keep_special_languages,
+        language_min_coverage=args.language_min_coverage,
+        feature_min_coverage=args.feature_min_coverage,
     )
     manifest_path = Path(args.split_manifest)
     split_rows = load_split_manifest_rows(

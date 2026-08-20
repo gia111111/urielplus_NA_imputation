@@ -58,8 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--regimes", nargs="+", default=None, help="Optional regime filter applied to --split-manifest rows.")
     parser.add_argument("--seeds", nargs="+", type=int, default=None, help="Optional seed filter applied to --split-manifest rows.")
     parser.add_argument("--index-col", default=None)
-    parser.add_argument("--drop-empty-languages", action="store_true")
-    parser.add_argument("--keep-special-languages", action="store_true", help="Keep special high-missingness groups instead of filtering them before masking/training.")
+    parser.add_argument("--language-min-coverage", type=float, default=0.05)
+    parser.add_argument("--feature-min-coverage", type=float, default=0.05)
     parser.add_argument("--max-train-cells", type=int, default=None)
     parser.add_argument("--selection-metric", default="rmse", choices=["rmse", "macro_f1"])
     parser.add_argument("--k-geo", type=int, default=50)
@@ -141,11 +141,15 @@ def main() -> None:
         args.typological,
         args.languages,
         index_col=args.index_col,
-        drop_empty_languages=args.drop_empty_languages,
-        filter_special_families=not args.keep_special_languages,
+        language_min_coverage=args.language_min_coverage,
+        feature_min_coverage=args.feature_min_coverage,
     )
     print(f"[data] matrix={dataset.X.shape}, observed={int(dataset.X.notna().sum().sum())}")
-    print(f"[data] special high-missingness rows removed={dataset.n_special_filtered}")
+    print(
+        "[data] coverage cutoff removed "
+        f"{len(dataset.filter_summary.dropped_languages)} languages and "
+        f"{len(dataset.filter_summary.dropped_features)} features"
+    )
 
     predictor_config = PredictorConfig(
         k_geo=args.k_geo,

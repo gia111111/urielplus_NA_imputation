@@ -7,7 +7,26 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from .feature_types import SPECIAL_FAMILY_IDS, feature_type_series
+from .feature_types import feature_type_series
+
+
+@dataclass(frozen=True)
+class CoverageFilterSummary:
+    language_min_coverage: float
+    feature_min_coverage: float
+    input_languages: int
+    input_features: int
+    input_observed_cells: int
+    input_missingness: float
+    output_languages: int
+    output_features: int
+    output_observed_cells: int
+    output_missingness: float
+    retained_languages: tuple[str, ...]
+    dropped_languages: tuple[str, ...]
+    retained_features: tuple[str, ...]
+    dropped_features: tuple[str, ...]
+    iterations: tuple[dict[str, int], ...]
 
 
 @dataclass
@@ -15,7 +34,7 @@ class UrielDataset:
     X: pd.DataFrame
     languages: pd.DataFrame
     feature_types: pd.Series
-    n_special_filtered: int = 0
+    filter_summary: CoverageFilterSummary
 
 
 def _clean_string_series(series: pd.Series) -> pd.Series:
@@ -111,18 +130,122 @@ def load_language_metadata(path: str | Path) -> pd.DataFrame:
     return lang
 
 
+def _validate_coverage_cutoff(value: float, *, name: str) -> float:
+    cutoff = float(value)
+    if not 0.0 <= cutoff <= 1.0:
+        raise ValueError(f"{name} must be between 0 and 1; got {cutoff}.")
+    return cutoff
+
+
+def apply_joint_coverage_filter(
+    X: pd.DataFrame,
+    *,
+    language_min_coverage: float = 0.05,
+    feature_min_coverage: float = 0.05,
+) -> tuple[pd.DataFrame, CoverageFilterSummary]:
+    """Apply the joint sweep's alternating inclusive coverage cutoff.
+
+    Each iteration filters languages first against the currently retained
+    features, then filters features against the retained languages.  The
+    process repeats until both axes are stable.  Coverage is natural-data
+    coverage only; this function is never called after artificial masking.
+    """
+    language_cutoff = _validate_coverage_cutoff(
+        language_min_coverage,
+        name="language_min_coverage",
+    )
+    feature_cutoff = _validate_coverage_cutoff(
+        feature_min_coverage,
+        name="feature_min_coverage",
+    )
+    if X.empty or X.shape[1] == 0:
+        raise ValueError("The typological matrix must have languages and features.")
+
+    original = X.copy()
+    filtered = original.copy()
+    history: list[dict[str, int]] = []
+    while True:
+        before_languages, before_features = filtered.shape
+        language_coverage = filtered.notna().mean(axis=1)
+        filtered = filtered.loc[language_coverage >= language_cutoff].copy()
+        if filtered.empty:
+            raise ValueError(
+                "The joint coverage cutoff removed every language after "
+                f"language_min_coverage={language_cutoff}."
+            )
+
+        feature_coverage = filtered.notna().mean(axis=0)
+        filtered = filtered.loc[:, feature_coverage >= feature_cutoff].copy()
+        if filtered.shape[1] == 0:
+            raise ValueError(
+                "The joint coverage cutoff removed every feature after "
+                f"feature_min_coverage={feature_cutoff}."
+            )
+
+        history.append(
+            {
+                "iteration": len(history) + 1,
+                "input_languages": int(before_languages),
+                "input_features": int(before_features),
+                "output_languages": int(filtered.shape[0]),
+                "output_features": int(filtered.shape[1]),
+                "observed_cells": int(filtered.notna().to_numpy().sum()),
+            }
+        )
+        if filtered.shape == (before_languages, before_features):
+            break
+
+    final_language_coverage = filtered.notna().mean(axis=1)
+    final_feature_coverage = filtered.notna().mean(axis=0)
+    if (final_language_coverage < language_cutoff).any():
+        raise AssertionError("A retained language violates the finalized cutoff.")
+    if (final_feature_coverage < feature_cutoff).any():
+        raise AssertionError("A retained feature violates the finalized cutoff.")
+
+    original_observed = int(original.notna().to_numpy().sum())
+    filtered_observed = int(filtered.notna().to_numpy().sum())
+    retained_languages = tuple(filtered.index.astype(str))
+    retained_features = tuple(filtered.columns.astype(str))
+    retained_language_set = set(retained_languages)
+    retained_feature_set = set(retained_features)
+    summary = CoverageFilterSummary(
+        language_min_coverage=language_cutoff,
+        feature_min_coverage=feature_cutoff,
+        input_languages=int(original.shape[0]),
+        input_features=int(original.shape[1]),
+        input_observed_cells=original_observed,
+        input_missingness=float(1.0 - original_observed / original.size),
+        output_languages=int(filtered.shape[0]),
+        output_features=int(filtered.shape[1]),
+        output_observed_cells=filtered_observed,
+        output_missingness=float(1.0 - filtered_observed / filtered.size),
+        retained_languages=retained_languages,
+        dropped_languages=tuple(
+            value
+            for value in original.index.astype(str)
+            if value not in retained_language_set
+        ),
+        retained_features=retained_features,
+        dropped_features=tuple(
+            value
+            for value in original.columns.astype(str)
+            if value not in retained_feature_set
+        ),
+        iterations=tuple(history),
+    )
+    return filtered, summary
+
+
 def load_dataset(
     typological_path: str | Path,
     languages_path: str | Path,
     *,
     index_col: Optional[str] = None,
-    drop_empty_languages: bool = False,
-    drop_empty_features: bool = True,
     keep_other_features: bool = False,
-    filter_special_families: bool = True,
-    special_family_ids: set[str] = SPECIAL_FAMILY_IDS,
+    language_min_coverage: float = 0.05,
+    feature_min_coverage: float = 0.05,
 ) -> UrielDataset:
-    """Load the typological matrix and append language metadata.
+    """Load, normalize, and freeze the post-cutoff benchmark matrix.
 
     The experiment matrix is defined by typological_data.csv. languages.csv is
     treated as side information and is left-joined by Glottolog code, using
@@ -132,6 +255,11 @@ def load_dataset(
         typological_path,
         index_col=index_col,
         keep_other_features=keep_other_features,
+    )
+    X, filter_summary = apply_joint_coverage_filter(
+        X,
+        language_min_coverage=language_min_coverage,
+        feature_min_coverage=feature_min_coverage,
     )
     languages = load_language_metadata(languages_path)
 
@@ -169,23 +297,6 @@ def load_dataset(
             languages[col] = np.nan
         languages[col] = pd.to_numeric(languages[col], errors="coerce")
 
-    n_special_filtered = 0
-    if filter_special_families:
-        raw_family_for_filter = languages["raw_family_id"].astype("string")
-        id_for_filter = languages["language_id"].astype("string")
-        keep = ~raw_family_for_filter.isin(special_family_ids) & ~id_for_filter.isin(special_family_ids)
-        n_special_filtered = int((~keep).sum())
-        X = X.loc[keep].copy()
-        languages = languages.loc[keep].copy()
-
-    if drop_empty_languages:
-        nonempty_rows = X.notna().any(axis=1)
-        X = X.loc[nonempty_rows].copy()
-        languages = languages.loc[nonempty_rows].copy()
-
-    if drop_empty_features:
-        X = X.loc[:, X.notna().any(axis=0)].copy()
-
     feature_types = feature_type_series(X.columns)
     languages["coverage"] = X.notna().mean(axis=1).astype(float)
     languages["missingness_rate"] = 1.0 - languages["coverage"]
@@ -219,5 +330,15 @@ def load_dataset(
         X=X,
         languages=languages,
         feature_types=feature_types,
-        n_special_filtered=n_special_filtered,
+        filter_summary=filter_summary,
     )
+
+
+__all__ = [
+    "CoverageFilterSummary",
+    "UrielDataset",
+    "apply_joint_coverage_filter",
+    "load_dataset",
+    "load_language_metadata",
+    "load_typological_matrix",
+]

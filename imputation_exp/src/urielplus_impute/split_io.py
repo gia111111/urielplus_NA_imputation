@@ -18,7 +18,7 @@ from .splits import (
 )
 
 
-SPLIT_SCHEMA_VERSION = 3
+SPLIT_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -35,11 +35,6 @@ class SplitPaths:
     n_val: int
     n_cal: int
     n_test: int
-    n_unscored_removed: int
-    n_adaptation: int
-    resource_group: str | None
-    target_feature_type: str | None
-    adaptation_budget: int | None
     target_language_pool_source: str
 
 
@@ -137,7 +132,7 @@ def write_split(
     *,
     quotas: StratumQuotas,
 ) -> SplitPaths:
-    """Write one schema-v3 split artifact and its complete audit metadata."""
+    """Write one schema-v4 split artifact and its complete audit metadata."""
     quota_values = quotas.as_dict()
     expected_strata = validate_stratified_masks(masks, feature_types, quota_values)
     split_dir = Path(outdir) / "splits" / masks.regime / f"seed_{masks.seed}"
@@ -155,8 +150,6 @@ def write_split(
         val_mask=masks.val_mask,
         cal_mask=masks.cal_mask,
         test_mask=masks.test_mask,
-        unscored_removed_mask=masks.unscored_removed_mask,
-        adaptation_mask=masks.adaptation_mask,
         target_languages=masks.target_languages,
         resource_groups=masks.resource_groups,
         scored_resource_groups=masks.scored_resource_groups,
@@ -182,9 +175,6 @@ def write_split(
         "quotas_per_stratum": quota_values,
         "expected_stratum_counts": expected_strata,
         "actual_stratum_counts": _actual_stratum_counts(masks, types),
-        "resource_group": masks.resource_group,
-        "target_feature_type": masks.target_feature_type,
-        "adaptation_budget": masks.adaptation_budget,
         "n_observed": int(masks.observed_mask.sum()),
         "n_target_languages": int(len(masks.target_languages)),
         "target_language_indices": masks.target_languages.astype(int).tolist(),
@@ -199,8 +189,6 @@ def write_split(
         "n_cal": int(masks.cal_mask.sum()),
         "n_test": int(masks.test_mask.sum()),
         "n_heldout": int(scored.sum()),
-        "n_unscored_removed": int(masks.unscored_removed_mask.sum()),
-        "n_adaptation": int(masks.adaptation_mask.sum()),
         "copy_events": int(
             len({case.event_id for case in masks.copy_provenance})
         ),
@@ -216,7 +204,6 @@ def write_split(
             "calibration": _feature_type_counts(masks.cal_mask, types),
             "test": _feature_type_counts(masks.test_mask, types),
             "regime_removed": _feature_type_counts(masks.regime_removed_mask, types),
-            "adaptation": _feature_type_counts(masks.adaptation_mask, types),
         },
         "overlap_checks": {
             "validation_calibration": int((masks.val_mask & masks.cal_mask).sum()),
@@ -224,10 +211,6 @@ def write_split(
             "calibration_test": int((masks.cal_mask & masks.test_mask).sum()),
             "scored_visible_in_training": int(
                 (scored & masks.train_visible_mask).sum()
-            ),
-            "adaptation_scored": int((masks.adaptation_mask & scored).sum()),
-            "adaptation_removed": int(
-                (masks.adaptation_mask & masks.train_removed_mask).sum()
             ),
         },
         "per_language_scored_counts": _per_language_scored_counts(
@@ -251,11 +234,6 @@ def write_split(
         n_val=int(masks.val_mask.sum()),
         n_cal=int(masks.cal_mask.sum()),
         n_test=int(masks.test_mask.sum()),
-        n_unscored_removed=int(masks.unscored_removed_mask.sum()),
-        n_adaptation=int(masks.adaptation_mask.sum()),
-        resource_group=masks.resource_group,
-        target_feature_type=masks.target_feature_type,
-        adaptation_budget=masks.adaptation_budget,
         target_language_pool_source=masks.target_language_pool_source,
     )
 
@@ -340,8 +318,6 @@ def _load_masks(split_path: Path, metadata: dict, metadata_path: Path) -> SplitM
         "val_mask",
         "cal_mask",
         "test_mask",
-        "unscored_removed_mask",
-        "adaptation_mask",
         "target_languages",
         "resource_groups",
         "scored_resource_groups",
@@ -362,16 +338,11 @@ def _load_masks(split_path: Path, metadata: dict, metadata_path: Path) -> SplitM
         val_mask=arrays["val_mask"].astype(bool),
         cal_mask=arrays["cal_mask"].astype(bool),
         test_mask=arrays["test_mask"].astype(bool),
-        unscored_removed_mask=arrays["unscored_removed_mask"].astype(bool),
-        adaptation_mask=arrays["adaptation_mask"].astype(bool),
         target_languages=arrays["target_languages"].astype(int),
         resource_groups=arrays["resource_groups"].astype(str),
         scored_resource_groups=arrays["scored_resource_groups"].astype(str),
         language_split=arrays["language_split"].astype(np.int8),
         target_language_pool_source=str(metadata["target_language_pool_source"]),
-        resource_group=metadata.get("resource_group"),
-        target_feature_type=metadata.get("target_feature_type"),
-        adaptation_budget=metadata.get("adaptation_budget"),
         copy_provenance=_load_copy_provenance(metadata, metadata_path),
     )
 

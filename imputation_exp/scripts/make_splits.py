@@ -14,7 +14,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from urielplus_impute.data import load_dataset
 from urielplus_impute.experiment import DEFAULT_REGIMES
-from urielplus_impute.masking import ADAPTATION_BUDGETS
 from urielplus_impute.split_io import write_split, write_split_manifest
 from urielplus_impute.splits import (
     StratumQuotas,
@@ -37,12 +36,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-per-stratum", type=int, default=500)
     parser.add_argument("--calibration-per-stratum", type=int, default=500)
     parser.add_argument("--test-per-stratum", type=int, default=1_000)
-    parser.add_argument(
-        "--adaptation-budgets",
-        nargs="+",
-        type=int,
-        default=list(ADAPTATION_BUDGETS),
-    )
     parser.add_argument("--index-col", default=None)
     parser.add_argument(
         "--language-min-coverage",
@@ -206,7 +199,6 @@ def main() -> None:
             dataset.languages,
             seed=seed,
             quotas=quotas,
-            adaptation_budgets=args.adaptation_budgets,
             regimes=args.regimes,
             summary=summary,
         ):

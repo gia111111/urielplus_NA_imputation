@@ -3,7 +3,6 @@ from __future__ import annotations
 DEFAULT_REGIMES = (
     "mcar",
     "resource_copy",
-    "local_fewshot",
 )
 
 SIMPLE_MODELS = ("logistic_regression", "decision_tree")

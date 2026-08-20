@@ -8,12 +8,10 @@ import pandas as pd
 
 from .feature_types import FEATURE_TYPES, as_feature_type_array
 from .masking import (
-    ADAPTATION_BUDGETS,
     EVALUATION_SPLITS,
     InfeasibleMaskError,
     RESOURCE_GROUPS,
     SplitMasks,
-    make_fewshot_local_masks,
     make_resource_conditioned_copy_mask,
     make_stratified_mcar_mask,
     validate_split_masks,
@@ -180,17 +178,13 @@ class SeedSplitSummary:
 
 
 def _expected_stratum_counts(
-    masks: SplitMasks,
     quotas: Mapping[str, int],
 ) -> dict[str, dict[str, int]]:
-    if masks.resource_group is not None and masks.target_feature_type is not None:
-        keys = [f"{masks.resource_group}:{masks.target_feature_type}"]
-    else:
-        keys = [
-            f"{group}:{target_type}"
-            for group in RESOURCE_GROUPS
-            for target_type in FEATURE_TYPES
-        ]
+    keys = [
+        f"{group}:{target_type}"
+        for group in RESOURCE_GROUPS
+        for target_type in FEATURE_TYPES
+    ]
     return {
         split_name: {key: int(quotas[split_name]) for key in keys}
         for split_name in EVALUATION_SPLITS
@@ -202,8 +196,8 @@ def validate_stratified_masks(
     feature_types: pd.Series | np.ndarray,
     quotas: Mapping[str, int],
 ) -> dict[str, dict[str, int]]:
-    expected = _expected_stratum_counts(masks, quotas)
-    multiplier = 1 if masks.resource_group is not None else len(RESOURCE_GROUPS) * len(FEATURE_TYPES)
+    expected = _expected_stratum_counts(quotas)
+    multiplier = len(RESOURCE_GROUPS) * len(FEATURE_TYPES)
     validate_split_masks(
         masks,
         feature_types,
@@ -212,14 +206,6 @@ def validate_stratified_masks(
         expected_test_size=int(quotas["test"]) * multiplier,
         expected_stratum_counts=expected,
     )
-    if masks.adaptation_budget is not None:
-        if int(masks.adaptation_mask.sum()) != int(masks.adaptation_budget):
-            raise AssertionError(
-                f"{masks.regime} has {int(masks.adaptation_mask.sum())} restored "
-                f"cells; expected {masks.adaptation_budget}."
-            )
-        if not np.all(masks.adaptation_mask <= masks.observed_mask):
-            raise AssertionError(f"{masks.regime} restores naturally missing cells.")
     return expected
 
 
@@ -230,8 +216,7 @@ def iter_stratified_seed_masks(
     *,
     seed: int,
     quotas: StratumQuotas = StratumQuotas(),
-    adaptation_budgets: Iterable[int] = ADAPTATION_BUDGETS,
-    regimes: Iterable[str] = ("mcar", "resource_copy", "local_fewshot"),
+    regimes: Iterable[str] = ("mcar", "resource_copy"),
     summary: SeedSplitSummary | None = None,
 ) -> Iterator[SplitMasks]:
     observed = X.notna().to_numpy(dtype=bool)
@@ -240,11 +225,11 @@ def iter_stratified_seed_masks(
     groups = stratification.groups
     quota_values = quotas.as_dict()
     requested = tuple(dict.fromkeys(str(value) for value in regimes))
-    unsupported = set(requested).difference({"mcar", "resource_copy", "local_fewshot"})
+    unsupported = set(requested).difference({"mcar", "resource_copy"})
     if unsupported:
         raise ValueError(
             f"Unsupported masking regimes {sorted(unsupported)}; expected mcar, "
-            "resource_copy, and/or local_fewshot."
+            "and/or resource_copy."
         )
     if summary is None:
         summary = SeedSplitSummary(
@@ -294,20 +279,6 @@ def iter_stratified_seed_masks(
             validate_stratified_masks(masks, types, quota_values)
             summary.generated_regimes.append(masks.regime)
             yield masks
-
-    if "local_fewshot" in requested:
-        for masks in make_fewshot_local_masks(
-            observed,
-            types,
-            groups,
-            seed=seed,
-            quotas=quota_values,
-            adaptation_budgets=adaptation_budgets,
-        ):
-            validate_stratified_masks(masks, types, quota_values)
-            summary.generated_regimes.append(masks.regime)
-            yield masks
-
 
 def make_seed_summary(
     X: pd.DataFrame,

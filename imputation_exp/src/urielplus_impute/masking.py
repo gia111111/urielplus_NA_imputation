@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
-from typing import Iterable, Iterator, Mapping
+from typing import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,6 @@ from .feature_types import FEATURE_TYPES, as_feature_type_array
 RESOURCE_GROUPS = ("P1", "P2")
 EVALUATION_SPLITS = ("validation", "calibration", "test")
 SPLIT_CODES = {"none": 0, "validation": 1, "calibration": 2, "test": 3}
-ADAPTATION_BUDGETS = (0, 2, 4, 8, 16, 32, 64, 128)
 
 
 class InfeasibleMaskError(ValueError):
@@ -27,7 +26,7 @@ class InfeasibleMaskError(ValueError):
 
 @dataclass(frozen=True)
 class CopyMaskCase:
-    """One scored cell from a full-pattern donor-target copy event."""
+    """One scored cell from a simulated donor-pattern copy event."""
 
     event_id: int
     seed: int
@@ -41,13 +40,14 @@ class CopyMaskCase:
     feature_type: str
     donor_group: str
     target_original_group: str
-    target_post_mask_group: str
+    target_pattern_group: str
+    target_actual_group: str
     matching_tier: str
     same_family: bool
     same_macroarea: bool
     donor_observed_count: int
     intersection_count: int
-    hidden_count: int
+    pattern_hidden_count: int
     similarity: float
     distance_km: float
 
@@ -63,16 +63,11 @@ class SplitMasks:
     val_mask: np.ndarray
     cal_mask: np.ndarray
     test_mask: np.ndarray
-    unscored_removed_mask: np.ndarray
-    adaptation_mask: np.ndarray
     target_languages: np.ndarray
     resource_groups: np.ndarray
     scored_resource_groups: np.ndarray
     language_split: np.ndarray
     target_language_pool_source: str
-    resource_group: str | None = None
-    target_feature_type: str | None = None
-    adaptation_budget: int | None = None
     copy_provenance: tuple[CopyMaskCase, ...] = ()
 
 
@@ -277,15 +272,11 @@ def _new_split_masks(
     val: np.ndarray,
     cal: np.ndarray,
     test: np.ndarray,
-    adaptation: np.ndarray,
     target_languages: Iterable[int],
     resource_groups: np.ndarray,
     language_split: np.ndarray,
     pool_source: str,
     scored_resource_groups: np.ndarray | None = None,
-    resource_group: str | None = None,
-    target_feature_type: str | None = None,
-    adaptation_budget: int | None = None,
     copy_provenance: tuple[CopyMaskCase, ...] = (),
 ) -> SplitMasks:
     train_removed = np.asarray(removed, dtype=bool)
@@ -305,16 +296,11 @@ def _new_split_masks(
         val_mask=val,
         cal_mask=cal,
         test_mask=test,
-        unscored_removed_mask=train_removed & ~scored,
-        adaptation_mask=adaptation,
         target_languages=np.unique(np.asarray(list(target_languages), dtype=int)),
         resource_groups=np.asarray(resource_groups, dtype="<U2"),
         scored_resource_groups=np.asarray(scored_resource_groups, dtype="<U2"),
         language_split=np.asarray(language_split, dtype=np.int8),
         target_language_pool_source=pool_source,
-        resource_group=resource_group,
-        target_feature_type=target_feature_type,
-        adaptation_budget=adaptation_budget,
         copy_provenance=copy_provenance,
     )
 
@@ -386,7 +372,6 @@ def make_stratified_mcar_mask(
         val=val,
         cal=cal,
         test=test,
-        adaptation=np.zeros_like(observed),
         target_languages=all_targets,
         resource_groups=groups,
         language_split=language_split,
@@ -618,7 +603,6 @@ def _copy_attempt(
                     continue
                 target, hidden, intersection_count, tier, distance = match
                 used_targets[target] = True
-                removed[target, hidden] = True
                 event_id += 1
 
                 selected_columns: list[int] = []
@@ -650,12 +634,17 @@ def _copy_attempt(
 
                 if not selected_columns:
                     raise AssertionError("A matched copy event did not score its anchor.")
-                target_post_group = (
+                target_pattern_group = (
                     "P2" if post_mask_is_p2[target, intersection_count] else "P1"
+                )
+                actual_count = int(observed[target].sum()) - len(selected_columns)
+                target_actual_group = (
+                    "P2" if post_mask_is_p2[target, actual_count] else "P1"
                 )
                 for column in selected_columns:
                     consumed_donor_cells.add((int(donor), int(column)))
                     target_type = str(types[column])
+                    removed[target, column] = True
                     scored_by_split[split_name][target, column] = True
                     scoring_groups[target, column] = donor_group
                     deficits[split_name][(donor_group, target_type)] -= 1
@@ -673,7 +662,8 @@ def _copy_attempt(
                             feature_type=target_type,
                             donor_group=donor_group,
                             target_original_group=str(groups[target]),
-                            target_post_mask_group=target_post_group,
+                            target_pattern_group=target_pattern_group,
+                            target_actual_group=target_actual_group,
                             matching_tier=tier,
                             same_family=bool(family[target] == family[donor]),
                             same_macroarea=bool(
@@ -681,7 +671,7 @@ def _copy_attempt(
                             ),
                             donor_observed_count=int(observed[donor].sum()),
                             intersection_count=int(intersection_count),
-                            hidden_count=int(hidden.sum()),
+                            pattern_hidden_count=int(hidden.sum()),
                             similarity=float(
                                 intersection_count / observed[donor].sum()
                             ),
@@ -706,7 +696,6 @@ def _copy_attempt(
         val=scored_by_split["validation"],
         cal=scored_by_split["calibration"],
         test=scored_by_split["test"],
-        adaptation=np.zeros_like(observed),
         target_languages=np.flatnonzero(used_targets),
         resource_groups=groups,
         scored_resource_groups=scoring_groups,
@@ -730,13 +719,13 @@ def make_resource_conditioned_copy_mask(
     quotas: Mapping[str, int],
     max_partition_attempts: int = 20,
 ) -> SplitMasks:
-    """Transfer full donor patterns and score multiple hidden cells per target.
+    """Use complete donor patterns to select multiple scored cells per target.
 
     Donor missing cells are preselected without replacement within each donor
     resource-group/domain queue.  A target is assigned to exactly one evaluation
     split and used in at most one donor-target event.  The full eligible hidden
-    set is removed, while as many members as needed are scored toward exact
-    donor-group/domain quotas.
+    set defines matching and eligibility, while only members selected toward the
+    exact donor-group/domain quotas are removed from training and scored.
     """
     observed = _boolean_mask(observed_mask, name="observed_mask")
     types = as_feature_type_array(feature_types, observed.shape[1])
@@ -773,134 +762,6 @@ def make_resource_conditioned_copy_mask(
     )
 
 
-def _nested_adaptation_order(
-    candidate_mask: np.ndarray,
-    target_rows: np.ndarray,
-    max_budget: int,
-    rng: np.random.Generator,
-) -> list[tuple[int, int]]:
-    candidates = _boolean_mask(candidate_mask, name="candidate_mask").copy()
-    row_usage = np.zeros(candidates.shape[0], dtype=int)
-    column_usage = np.zeros(candidates.shape[1], dtype=int)
-    selected: list[tuple[int, int]] = []
-    for _ in range(int(max_budget)):
-        eligible_rows = target_rows[candidates[target_rows].any(axis=1)]
-        if not len(eligible_rows):
-            raise InfeasibleMaskError(
-                f"Only {len(selected)} non-scored adaptation cells are available; "
-                f"requested {max_budget}."
-            )
-        minimum_row_usage = int(row_usage[eligible_rows].min())
-        eligible_rows = eligible_rows[row_usage[eligible_rows] == minimum_row_usage]
-        row = int(rng.choice(eligible_rows))
-        columns = np.flatnonzero(candidates[row])
-        minimum_column_usage = int(column_usage[columns].min())
-        columns = columns[column_usage[columns] == minimum_column_usage]
-        column = int(rng.choice(columns))
-        selected.append((row, column))
-        candidates[row, column] = False
-        row_usage[row] += 1
-        column_usage[column] += 1
-    return selected
-
-
-def make_fewshot_local_masks(
-    observed_mask: np.ndarray,
-    feature_types: pd.Series | np.ndarray,
-    resource_groups: np.ndarray,
-    *,
-    seed: int,
-    quotas: Mapping[str, int],
-    adaptation_budgets: Iterable[int] = ADAPTATION_BUDGETS,
-) -> Iterator[SplitMasks]:
-    observed = _boolean_mask(observed_mask, name="observed_mask")
-    types = as_feature_type_array(feature_types, observed.shape[1])
-    groups = np.asarray(resource_groups, dtype=str)
-    known = observed.sum(axis=1).astype(int)
-    budgets = tuple(sorted(set(int(value) for value in adaptation_budgets)))
-    if not budgets or budgets[0] < 0:
-        raise ValueError("adaptation_budgets must contain non-negative integers.")
-    max_budget = budgets[-1]
-    for group in RESOURCE_GROUPS:
-        for target_type in FEATURE_TYPES:
-            rng = np.random.default_rng(
-                derived_seed(seed, f"local:{group}:{target_type}")
-            )
-            target_columns = np.flatnonzero(types == target_type)
-            domain_known = observed[:, target_columns].sum(axis=1).astype(int)
-            eligible_rows = np.flatnonzero(
-                (groups == group)
-                & (domain_known > 0)
-                & ((known - domain_known) > 0)
-            )
-            pools, ordered_targets = _partition_with_capacity(
-                observed,
-                eligible_rows,
-                types,
-                quotas,
-                rng,
-                required_types=(target_type,),
-            )
-            language_split = np.zeros(observed.shape[0], dtype=np.int8)
-            scored_by_split = {
-                name: np.zeros_like(observed) for name in EVALUATION_SPLITS
-            }
-            for split_name, pool in pools.items():
-                language_split[pool] = SPLIT_CODES[split_name]
-                _balanced_sample_cells(
-                    observed,
-                    pool,
-                    target_columns,
-                    int(quotas[split_name]),
-                    rng,
-                    scored_by_split[split_name],
-                )
-            val = scored_by_split["validation"]
-            cal = scored_by_split["calibration"]
-            test = scored_by_split["test"]
-            scored = val | cal | test
-            blocked = np.zeros_like(observed)
-            blocked[np.ix_(ordered_targets, target_columns)] = observed[
-                np.ix_(ordered_targets, target_columns)
-            ]
-            adaptation_order = _nested_adaptation_order(
-                blocked & ~scored,
-                ordered_targets,
-                max_budget,
-                rng,
-            )
-            for budget in budgets:
-                adaptation = np.zeros_like(observed)
-                if budget:
-                    positions = adaptation_order[:budget]
-                    adaptation[
-                        np.asarray([row for row, _ in positions], dtype=int),
-                        np.asarray([column for _, column in positions], dtype=int),
-                    ] = True
-                removed = blocked & ~adaptation
-                regime = f"local_fewshot_{target_type}_{group}_n{budget}"
-                yield _new_split_masks(
-                    regime=regime,
-                    seed=seed,
-                    observed=observed,
-                    removed=removed,
-                    val=val.copy(),
-                    cal=cal.copy(),
-                    test=test.copy(),
-                    adaptation=adaptation,
-                    target_languages=ordered_targets,
-                    resource_groups=groups,
-                    language_split=language_split,
-                    pool_source=(
-                        f"{group}_{target_type}_eligible_languages_"
-                        "partitioned_into_disjoint_split_pools"
-                    ),
-                    resource_group=group,
-                    target_feature_type=target_type,
-                    adaptation_budget=budget,
-                )
-
-
 def _check(condition: bool, message: str, masks: SplitMasks) -> None:
     if not condition:
         raise AssertionError(
@@ -928,8 +789,6 @@ def validate_split_masks(
         "val_mask",
         "cal_mask",
         "test_mask",
-        "unscored_removed_mask",
-        "adaptation_mask",
     ):
         _boolean_mask(getattr(masks, name), name=name, shape=shape)
     _check(len(masks.resource_groups) == shape[0], "wrong resource group length", masks)
@@ -946,10 +805,19 @@ def validate_split_masks(
     _check(not np.any(val & test), "validation/test overlap", masks)
     _check(not np.any(cal & test), "calibration/test overlap", masks)
     _check(np.all(scored <= observed), "scored mask contains missing cells", masks)
-    _check(np.all(scored <= masks.train_removed_mask), "scored cells are train-visible", masks)
     _check(
-        np.array_equal(masks.train_removed_mask, masks.regime_removed_mask),
-        "train_removed is inconsistent",
+        np.all(scored <= masks.train_removed_mask),
+        "a scored cell was not removed from training",
+        masks,
+    )
+    _check(
+        np.array_equal(masks.train_removed_mask, scored),
+        "train_removed must contain exactly the scored cells",
+        masks,
+    )
+    _check(
+        np.array_equal(masks.regime_removed_mask, scored),
+        "regime_removed must contain exactly the scored cells",
         masks,
     )
     _check(
@@ -958,20 +826,13 @@ def validate_split_masks(
         masks,
     )
     _check(
-        np.array_equal(masks.unscored_removed_mask, masks.train_removed_mask & ~scored),
-        "unscored_removed is inconsistent",
-        masks,
-    )
-    _check(not np.any(masks.adaptation_mask & masks.train_removed_mask), "adaptation remains masked", masks)
-    _check(not np.any(masks.adaptation_mask & scored), "adaptation overlaps scored cells", masks)
-    _check(
         np.all(np.isin(masks.scored_resource_groups[scored], RESOURCE_GROUPS)),
         "a scored cell lacks a P1/P2 scoring group",
         masks,
     )
     _check(
         not np.any(masks.scored_resource_groups[~scored] != ""),
-        "an unscored cell has a scoring group",
+        "a non-scored cell has a scoring group",
         masks,
     )
 
@@ -1009,18 +870,22 @@ def validate_split_masks(
         for cases in by_event.values():
             first = cases[0]
             donor, target = first.donor_index, first.target_index
-            hidden = observed[target] & ~observed[donor]
+            pattern_hidden = observed[target] & ~observed[donor]
             intersection_count = int((observed[target] & observed[donor]).sum())
+            event_scored = np.zeros(observed.shape[1], dtype=bool)
+            event_scored[
+                [case.scored_feature_index for case in cases]
+            ] = True
             _check(
                 np.array_equal(
                     masks.train_visible_mask[target],
-                    observed[target] & observed[donor],
+                    observed[target] & ~event_scored,
                 ),
-                "copy event did not transfer the complete donor pattern",
+                "copy event removed cells outside its scored set",
                 masks,
             )
             _check(
-                all(hidden[case.scored_feature_index] for case in cases),
+                all(pattern_hidden[case.scored_feature_index] for case in cases),
                 "copy provenance includes a cell outside H_dt",
                 masks,
             )
@@ -1029,16 +894,16 @@ def validate_split_masks(
                 "copy provenance has an incorrect intersection count",
                 masks,
             )
-            post_group = "P2" if first.target_post_mask_group == "P2" else "P1"
+            pattern_group = first.target_pattern_group
             _check(
                 all(
-                    case.donor_group == post_group
+                    case.donor_group == pattern_group
                     and masks.scored_resource_groups[
                         target, case.scored_feature_index
                     ] == case.donor_group
                     for case in cases
                 ),
-                "copy scoring group does not match the target post-mask group",
+                "copy scoring group does not match the simulated pattern group",
                 masks,
             )
 
@@ -1062,7 +927,6 @@ def validate_split_masks(
 
 
 __all__ = [
-    "ADAPTATION_BUDGETS",
     "CopyMaskCase",
     "EVALUATION_SPLITS",
     "InfeasibleMaskError",
@@ -1070,7 +934,6 @@ __all__ = [
     "SPLIT_CODES",
     "SplitMasks",
     "derived_seed",
-    "make_fewshot_local_masks",
     "make_resource_conditioned_copy_mask",
     "make_stratified_mcar_mask",
     "resource_domain_counts",

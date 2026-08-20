@@ -149,10 +149,20 @@ class FullBenchmarkMaskingTests(unittest.TestCase):
                     regimes=("mcar", "resource_copy"),
                 )
             )
-            self.assertEqual([item.regime for item in generated], ["mcar", "resource_copy"])
+            self.assertEqual(
+                [item.regime for item in generated],
+                ["mcar", "resource_copy"],
+            )
             for masks in generated:
                 self._assert_exact_quotas(masks)
                 self._assert_no_leakage(masks)
+                scored = masks.val_mask | masks.cal_mask | masks.test_mask
+                self.assertTrue(np.array_equal(masks.train_removed_mask, scored))
+                self.assertTrue(np.array_equal(masks.regime_removed_mask, scored))
+                self.assertEqual(
+                    int(masks.train_visible_mask.sum()),
+                    int(masks.observed_mask.sum()) - 16_000,
+                )
 
             copy_masks = generated[1]
             event_targets: dict[int, int] = {}
@@ -163,7 +173,7 @@ class FullBenchmarkMaskingTests(unittest.TestCase):
                 self.assertEqual(event_targets[case.event_id], case.target_index)
                 event_sizes[case.event_id] = event_sizes.get(case.event_id, 0) + 1
                 self.assertEqual(case.seed, seed)
-                self.assertEqual(case.donor_group, case.target_post_mask_group)
+                self.assertEqual(case.donor_group, case.target_pattern_group)
                 self.assertAlmostEqual(
                     case.similarity,
                     case.intersection_count / case.donor_observed_count,
@@ -173,40 +183,25 @@ class FullBenchmarkMaskingTests(unittest.TestCase):
                 donor_cells.add(donor_cell)
             self.assertEqual(len(event_targets), len(set(event_targets.values())))
             self.assertTrue(any(size > 1 for size in event_sizes.values()))
-            self.assertGreater(int(copy_masks.unscored_removed_mask.sum()), 0)
-
-    def test_fewshot_adaptation_sets_are_nested(self) -> None:
-        generated = list(
-            iter_stratified_seed_masks(
-                self.dataset.X,
-                self.dataset.feature_types,
-                self.dataset.languages,
-                seed=0,
-                quotas=self.quotas,
-                regimes=("local_fewshot",),
-            )
-        )
-        self.assertTrue(
-            all(masks.regime.startswith("local_fewshot_") for masks in generated)
-        )
-        selected = {
-            masks.adaptation_budget: masks
-            for masks in generated
-            if masks.resource_group == "P1" and masks.target_feature_type == "S"
-        }
-        self.assertEqual(tuple(sorted(selected)), (0, 2, 4, 8, 16, 32, 64, 128))
-        previous = np.zeros_like(next(iter(selected.values())).adaptation_mask)
-        for budget in sorted(selected):
-            masks = selected[budget]
-            self.assertEqual(int(masks.adaptation_mask.sum()), budget)
-            self.assertTrue(np.all(previous <= masks.adaptation_mask))
-            self.assertFalse(
-                np.any(
-                    masks.adaptation_mask
-                    & (masks.val_mask | masks.cal_mask | masks.test_mask)
+            cases_by_event: dict[int, list] = {}
+            for case in copy_masks.copy_provenance:
+                cases_by_event.setdefault(case.event_id, []).append(case)
+            for cases in cases_by_event.values():
+                donor = cases[0].donor_index
+                target = cases[0].target_index
+                pattern_hidden = (
+                    copy_masks.observed_mask[target]
+                    & ~copy_masks.observed_mask[donor]
                 )
-            )
-            previous = masks.adaptation_mask
+                scored_columns = np.asarray(
+                    [case.scored_feature_index for case in cases],
+                    dtype=int,
+                )
+                nonselected_pattern = pattern_hidden.copy()
+                nonselected_pattern[scored_columns] = False
+                self.assertTrue(
+                    np.all(copy_masks.train_visible_mask[target, nonselected_pattern])
+                )
 
 
 if __name__ == "__main__":

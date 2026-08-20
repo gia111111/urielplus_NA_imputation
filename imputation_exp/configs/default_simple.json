@@ -2,7 +2,7 @@
   "typological": "urielplus_analysis/typological_data.csv",
   "languages": "urielplus_analysis/languages.csv",
   "split_manifest": "imputation_exp/runs/splits/manifests/split_manifest.csv",
-  "regimes": null,
+  "regimes": ["mcar", "resource_copy"],
   "seeds": [0, 1, 2],
   "language_min_coverage": 0.05,
   "feature_min_coverage": 0.05,

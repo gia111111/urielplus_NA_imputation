@@ -75,16 +75,3 @@ def feature_types_for_column_indices(
     if np.any(indices < 0) or np.any(indices >= n_features):
         raise ValueError("column_indices contains an index outside the feature matrix.")
     return types[indices]
-
-
-def feature_type_from_regime(regime: str) -> str:
-    prefix = "local_fewshot_"
-    if regime.startswith(prefix):
-        target_type = regime[len(prefix) :].split("_", 1)[0]
-        if target_type in FEATURE_TYPES:
-            return target_type
-    raise ValueError(
-        f"Unknown local regime {regime!r}. Expected "
-        "local_fewshot_<type>_<group>_n<budget>, where type is one of "
-        f"{FEATURE_TYPES}."
-    )

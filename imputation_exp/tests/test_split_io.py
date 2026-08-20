@@ -57,6 +57,10 @@ class SplitRoundTripTests(unittest.TestCase):
             self.assertEqual(len(loaded.cal_cells), 4000)
             self.assertEqual(len(loaded.test_cells), 8000)
             self.assertEqual(len(loaded.masks.copy_provenance), 16000)
+            self.assertEqual(paths.n_regime_removed, 16000)
+            self.assertEqual(paths.n_regime_removed, paths.n_heldout)
+            self.assertEqual(loaded.metadata["schema_version"], 4)
+            self.assertEqual(loaded.metadata["n_train_removed"], 16000)
             self.assertIn("resource_group", loaded.test_cells.columns)
             self.assertIn(
                 "target_original_resource_group",

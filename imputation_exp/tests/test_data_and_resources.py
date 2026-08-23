@@ -44,11 +44,12 @@ class CoverageFilterTests(unittest.TestCase):
             REPOSITORY_ROOT / "urielplus_analysis" / "typological_data.csv",
             REPOSITORY_ROOT / "urielplus_analysis" / "languages.csv",
         )
-        self.assertEqual(dataset.X.shape, (3823, 456))
-        self.assertEqual(int(dataset.X.notna().to_numpy().sum()), 838158)
+        self.assertEqual(dataset.filter_summary.input_languages, 7723)
+        self.assertEqual(dataset.X.shape, (3802, 456))
+        self.assertEqual(int(dataset.X.notna().to_numpy().sum()), 834850)
         self.assertAlmostEqual(
             100.0 * dataset.filter_summary.output_missingness,
-            51.92085300879717,
+            51.84609669887501,
             places=10,
         )
         self.assertEqual(
@@ -58,6 +59,18 @@ class CoverageFilterTests(unittest.TestCase):
         self.assertTrue((dataset.X.notna().mean(axis=1) >= 0.05).all())
         self.assertTrue((dataset.X.notna().mean(axis=0) >= 0.05).all())
         self.assertTrue((dataset.X.notna().sum(axis=1) > 0).all())
+        self.assertFalse(
+            dataset.languages["raw_family_id"].isin(
+                {
+                    "unat1236",
+                    "sign1238",
+                    "arti1236",
+                    "uncl1493",
+                    "spee1234",
+                    "book1242",
+                }
+            ).any()
+        )
 
         repeated = load_dataset(
             REPOSITORY_ROOT / "urielplus_analysis" / "typological_data.csv",

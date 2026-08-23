@@ -10,6 +10,16 @@ import pandas as pd
 from .feature_types import feature_type_series
 
 
+SPECIAL_FAMILY_IDS = {
+    "unat1236",
+    "sign1238",
+    "arti1236",
+    "uncl1493",
+    "spee1234",
+    "book1242",
+}
+
+
 @dataclass(frozen=True)
 class CoverageFilterSummary:
     language_min_coverage: float
@@ -249,19 +259,24 @@ def load_dataset(
 
     The experiment matrix is defined by typological_data.csv. languages.csv is
     treated as side information and is left-joined by Glottolog code, using
-    typological_data.csv's language column and languages.csv's ID column.
+    typological_data.csv's language column and languages.csv's ID column. The
+    six Glottolog special families are removed before the coverage cutoff.
     """
     X = load_typological_matrix(
         typological_path,
         index_col=index_col,
         keep_other_features=keep_other_features,
     )
+    languages = load_language_metadata(languages_path)
+    special_languages = languages.index[
+        languages["raw_family_id"].isin(SPECIAL_FAMILY_IDS)
+    ]
+    X = X.loc[~X.index.isin(special_languages)].copy()
     X, filter_summary = apply_joint_coverage_filter(
         X,
         language_min_coverage=language_min_coverage,
         feature_min_coverage=feature_min_coverage,
     )
-    languages = load_language_metadata(languages_path)
 
     overlap = X.index.intersection(languages.index)
     if len(overlap) == 0:

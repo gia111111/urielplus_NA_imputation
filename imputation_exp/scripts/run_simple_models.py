@@ -17,7 +17,12 @@ from urielplus_impute.diagnostics import (
     write_decision_tree_diagnostics,
     write_logistic_diagnostics,
 )
-from urielplus_impute.experiment import FULL_PREDICTOR_SET, SIMPLE_MODELS
+from urielplus_impute.experiment import (
+    DEFAULT_REGIMES,
+    DEFAULT_SPLIT_MANIFEST,
+    FULL_PREDICTOR_SET,
+    SIMPLE_MODELS,
+)
 from urielplus_impute.metrics import (
     compute_binary_imputation_metrics,
     compute_stratified_metrics,
@@ -32,9 +37,6 @@ from urielplus_impute.split_io import (
 from urielplus_impute.splits import observed_cells_df
 
 
-DEFAULT_SPLIT_MANIFEST = "imputation_exp/runs/splits/manifests/split_manifest.csv"
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run proposal simple models for URIEL+ imputation.")
     parser.add_argument("--typological", default="urielplus_analysis/typological_data.csv")
@@ -44,8 +46,9 @@ def parse_args() -> argparse.Namespace:
         "--split-manifest",
         default=DEFAULT_SPLIT_MANIFEST,
         help=(
-            "split_manifest.csv produced by make_splits.py. "
-            "The simple models reuse these exact train/val/test files."
+            "Schema-v4 split_manifest.csv produced by make_splits.py. The "
+            "simple models reuse its train, validation, calibration, and test "
+            "cells."
         ),
     )
     parser.add_argument("--models", nargs="+", default=list(SIMPLE_MODELS), choices=list(SIMPLE_MODELS))
@@ -55,7 +58,16 @@ def parse_args() -> argparse.Namespace:
         choices=[FULL_PREDICTOR_SET],
         help="Predictor set label kept in output tables; the revised proposal uses only `full`.",
     )
-    parser.add_argument("--regimes", nargs="+", default=None, help="Optional regime filter applied to --split-manifest rows.")
+    parser.add_argument(
+        "--regimes",
+        nargs="+",
+        default=list(DEFAULT_REGIMES),
+        choices=list(DEFAULT_REGIMES),
+        help=(
+            "Masking regimes to run from --split-manifest "
+            f"(default: {', '.join(DEFAULT_REGIMES)})."
+        ),
+    )
     parser.add_argument("--seeds", nargs="+", type=int, default=None, help="Optional seed filter applied to --split-manifest rows.")
     parser.add_argument("--index-col", default=None)
     parser.add_argument("--language-min-coverage", type=float, default=0.05)
@@ -97,7 +109,8 @@ def load_split_rows_from_manifest(args: argparse.Namespace) -> tuple[list[dict],
     if not manifest_path.exists():
         raise FileNotFoundError(
             f"Split manifest not found: {manifest_path}. "
-            "Run `python3 imputation_exp/scripts/make_splits.py --outdir imputation_exp/runs/splits` "
+            "Run `python3 imputation_exp/scripts/make_splits.py "
+            "--outdir imputation_exp/runs/stratified_splits` "
             "first, or pass --split-manifest pointing to an existing split_manifest.csv."
         )
 
@@ -194,14 +207,18 @@ def main() -> None:
         seed = loaded.seed
         print(f"[split] regime={regime} seed={seed} source=manifest")
         X_train = loaded.train_matrix
-        val_mask = loaded.val_cells
-        test_mask = loaded.test_cells
+        val_cells = loaded.val_cells
+        calibration_cells = loaded.cal_cells
+        test_cells = loaded.test_cells
         languages = dataset.languages.reindex(X_train.index)
         feature_types = dataset.feature_types.reindex(X_train.columns)
 
         train_cells = observed_cells_df(X_train, feature_types)
         train_cells = maybe_sample_train_cells(train_cells, args.max_train_cells, seed)
-        print(f"[features] train_cells={len(train_cells)} val={len(val_mask)} test={len(test_mask)}")
+        print(
+            f"[features] train={len(train_cells)} val={len(val_cells)} "
+            f"calibration={len(calibration_cells)} test={len(test_cells)}"
+        )
 
         builder = ProposalPredictorBuilder(
             X_train,
@@ -210,8 +227,9 @@ def main() -> None:
             config=predictor_config,
         ).fit()
         train_features = builder.build(train_cells)
-        val_features = builder.build(val_mask)
-        test_features = builder.build(test_mask)
+        val_features = builder.build(val_cells)
+        calibration_features = builder.build(calibration_cells)
+        test_features = builder.build(test_cells)
 
         if args.save_predictor_table_heads:
             coef_dir = outdir / "predictor_tables" / variant / regime
@@ -259,7 +277,7 @@ def main() -> None:
                 model.fit(train_features, train_features["true_value"].to_numpy())
                 val_prob = model.predict_proba(val_features)
                 val_metrics = compute_binary_imputation_metrics(
-                    val_mask["true_value"].to_numpy(),
+                    val_cells["true_value"].to_numpy(),
                     val_prob,
                     threshold=0.5,
                 )
@@ -286,7 +304,18 @@ def main() -> None:
 
             assert best is not None
             selected_model = best["model"]
+            calibration_prob = selected_model.predict_proba(calibration_features)
             test_prob = selected_model.predict_proba(test_features)
+            save_predictions(
+                outdir,
+                variant,
+                model_name,
+                regime,
+                seed,
+                "calibration",
+                calibration_cells,
+                calibration_prob,
+            )
             predictor_selection_rows.append(
                 {
                     "model": model_name,
@@ -326,8 +355,8 @@ def main() -> None:
             )
 
             for split_name, mask, probs in [
-                ("val", val_mask, best["val_prob"]),
-                ("test", test_mask, test_prob),
+                ("val", val_cells, best["val_prob"]),
+                ("test", test_cells, test_prob),
             ]:
                 metrics = compute_binary_imputation_metrics(
                     mask["true_value"].to_numpy(),
@@ -348,6 +377,7 @@ def main() -> None:
                         "n_train_observed": int(X_train.notna().sum().sum()),
                         "n_heldout": int(loaded.metadata["n_heldout"]),
                         "n_val": int(loaded.metadata["n_val"]),
+                        "n_cal": int(loaded.metadata["n_cal"]),
                         "n_test": int(loaded.metadata["n_test"]),
                         "split_path": str(loaded.split_path),
                         "metadata_path": str(loaded.metadata_path),

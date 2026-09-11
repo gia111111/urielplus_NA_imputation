@@ -1,0 +1,35 @@
+# Operating-system and editor files
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python environments and generated caches
+/.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Large generated experiment outputs
+/imputation_exp/runs/
+/typological_universals_check/outputs/
+/urielplus_cacti_runs/*
+!/urielplus_cacti_runs/README.md
+/urielplus_analysis/figures/
+/analysis_runs/
+
+# Preserved external datasets and binary archives
+/data/external/*
+!/data/external/README.md
+/archives/*.tgz
+
+# Independent upstream Git checkouts
+/external/CACTI/
+/external/URIELPlus/
+/external/lang2vec/
